@@ -168,11 +168,21 @@ export class MockLayer {
     const event = this.nextOfType('http_response_in');
     if (!event) return null;
 
+    let body = event.data['body'];
+    if (body === '[STREAMING]') {
+      const bodyEvent = this.nextOfType('http_response_in_body');
+      if (bodyEvent && bodyEvent.data && bodyEvent.data['body'] !== undefined) {
+        body = bodyEvent.data['body'];
+      } else {
+        body = null;
+      }
+    }
+
     return {
       status: event.data['status'] as number,
       statusText: (event.data['statusText'] as string) ?? 'OK',
       headers: (event.data['headers'] as Record<string, string>) ?? {},
-      body: event.data['body'],
+      body,
     };
   }
 

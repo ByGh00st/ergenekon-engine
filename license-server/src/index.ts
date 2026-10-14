@@ -211,17 +211,25 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // Rate limit per email (normalized to prevent +tag bypass)
       const rateLimitKey = normalizeEmail(email);
 
-      // Extract client IP (H-07: don't trust leftmost XFF, use rightmost or socket)
-      const forwardedFor = req.headers['x-forwarded-for'] as string | undefined;
-      const clientIp = forwardedFor
-        ? forwardedFor.split(',').pop()!.trim()
-        : req.socket.remoteAddress || 'unknown';
+      // Extract client IP (only trust XFF if direct connection is from a trusted proxy)
+      const TRUSTED_PROXIES = (process.env.TRUSTED_PROXY_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
+      const remoteAddress = req.socket.remoteAddress || 'unknown';
+      let clientIp = remoteAddress;
+      if (TRUSTED_PROXIES.includes(remoteAddress)) {
+        const forwardedFor = req.headers['x-forwarded-for'] as string | undefined;
+        if (forwardedFor) {
+          clientIp = forwardedFor.split(',').pop()!.trim();
+        }
+      }
       
-      // Hard cap: prevent OOM from script abuse
-      if ((freeRegistrations.size >= MAX_MAP_SIZE && !freeRegistrations.has(rateLimitKey)) ||
-          (ipRegistrations.size >= MAX_MAP_SIZE && !ipRegistrations.has(clientIp))) {
-        json(res, 503, { error: 'Service temporarily unavailable. Please try again later.' });
-        return;
+      // Hard cap: FIFO eviction to prevent OOM without causing global 503 DoS
+      if (freeRegistrations.size >= MAX_MAP_SIZE && !freeRegistrations.has(rateLimitKey)) {
+        const oldestKey = freeRegistrations.keys().next().value;
+        if (oldestKey) freeRegistrations.delete(oldestKey);
+      }
+      if (ipRegistrations.size >= MAX_MAP_SIZE && !ipRegistrations.has(clientIp)) {
+        const oldestIp = ipRegistrations.keys().next().value;
+        if (oldestIp) ipRegistrations.delete(oldestIp);
       }
       
       const ipReg = ipRegistrations.get(clientIp);
@@ -299,22 +307,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
 
       const adminKey = (req.headers['x-admin-key'] as string) || '';
-      // SECURITY (HIGH-03): Fixed 64-byte buffers mask key length.
-      // timingSafeEqual runs FIRST, length check AFTER — no short-circuit length oracle.
-      const FIXED_LEN = 64;
-      const keyBuffer = Buffer.alloc(FIXED_LEN);
-      const configBuffer = Buffer.alloc(FIXED_LEN);
-      Buffer.from(adminKey).copy(keyBuffer, 0, 0, FIXED_LEN);
-      Buffer.from(configuredKey).copy(configBuffer, 0, 0, FIXED_LEN);
-
       let isValid = false;
       try {
-        const { timingSafeEqual } = await import('node:crypto');
-        // Compare first (constant-time), THEN check length — prevents length oracle
-        const bytesMatch = timingSafeEqual(keyBuffer, configBuffer);
-        isValid = bytesMatch && adminKey.length === configuredKey.length;
-      } catch {
+        const { createHash, timingSafeEqual } = await import('node:crypto');
+        const hashA = createHash('sha256').update(adminKey).digest();
+        const hashB = createHash('sha256').update(configuredKey).digest();
+        isValid = timingSafeEqual(hashA, hashB) && adminKey.length === configuredKey.length;
+      } catch (err: unknown) {
         isValid = false;
+        console.error('[SECURITY] Timing-safe auth comparison exception:', err);
       }
 
       if (!isValid) {

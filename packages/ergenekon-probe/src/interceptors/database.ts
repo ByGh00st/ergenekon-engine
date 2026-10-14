@@ -47,6 +47,16 @@ let redisInstalled = false;
 let mongoInstalled = false;
 
 // ============================================================================
+// Helper to sanitize literal credentials in non-parameterized SQL statements
+export function sanitizeSqlQuery(sql: string): string {
+  if (typeof sql !== 'string') return String(sql ?? '');
+  let sanitized = String(redactDeep(sql));
+  if (/password|secret|token|hash|pin|auth|credential|apikey/i.test(sanitized)) {
+    sanitized = sanitized.replace(/'(?:[^'\\]|\\.)*'/g, "'[REDACTED]'");
+  }
+  return sanitized;
+}
+
 // PostgreSQL (pg) Interceptor
 // ============================================================================
 
@@ -80,10 +90,11 @@ export function installPgInterceptor(): boolean {
 
     const queryText = queryConfig?.text ?? String(args[0]);
     const queryValues = queryConfig?.values;
+    const safeQuery = sanitizeSqlQuery(queryText);
 
-    session.record('db_query', `PG: ${String(redactDeep(queryText)).slice(0, 80)}`, {
+    session.record('db_query', `PG: ${safeQuery.slice(0, 80)}`, {
       engine: 'postgresql',
-      query: redactDeep(queryText),
+      query: safeQuery,
       values: redactDeep(queryValues ?? null),
     });
 
@@ -130,10 +141,11 @@ export function installPgInterceptor(): boolean {
 
     const queryText = queryConfig?.text ?? String(args[0]);
     const queryValues = queryConfig?.values;
+    const safeQuery = sanitizeSqlQuery(queryText);
 
-    session.record('db_query', `PG Pool: ${String(redactDeep(queryText)).slice(0, 80)}`, {
+    session.record('db_query', `PG Pool: ${safeQuery.slice(0, 80)}`, {
       engine: 'postgresql',
-      query: redactDeep(queryText),
+      query: safeQuery,
       values: redactDeep(queryValues ?? null),
     });
 

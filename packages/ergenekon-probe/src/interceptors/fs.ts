@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import { getActiveSession } from '../recording-context.js';
 import { originalDateNow } from '../internal-clock.js';
-import { redactDeep } from '../redaction.js';
+import { redactDeep, looksLikeSecret } from '../redaction.js';
 
 let installed = false;
 
@@ -197,13 +197,25 @@ function createCbWrapper(method: string, original: Function): Function {
   };
 }
 
-/** Sanitize arguments for recording (remove Buffer content, keep metadata) */
-function sanitizeArgs(args: unknown[]): unknown[] {
+/** Sanitize arguments for recording (remove Buffer content, redact sensitive content) */
+export function sanitizeArgs(args: unknown[]): unknown[] {
+  const filePath = typeof args[0] === 'string' ? args[0].toLowerCase() : '';
+  const isSensitiveFile = /(?:^|[/\\])\.env|(?:token|secret|password|credential|id_rsa|private\.key)/i.test(filePath);
+
   return args.map((arg, i) => {
     if (Buffer.isBuffer(arg)) return `<Buffer ${arg.length} bytes>`;
-    if (typeof arg === 'object' && arg !== null && !(arg instanceof URL)) {
-      // Options object — keep as-is but truncate large values
+    if (typeof arg === 'string') {
+      if (i > 0) {
+        if (isSensitiveFile || looksLikeSecret(arg) || /token|secret|password|key/i.test(arg)) {
+          return '[REDACTED]';
+        }
+        return redactDeep(arg);
+      }
       return arg;
+    }
+    if (typeof arg === 'object' && arg !== null && !(arg instanceof URL)) {
+      // Options object or complex args
+      return redactDeep(arg);
     }
     return arg;
   });

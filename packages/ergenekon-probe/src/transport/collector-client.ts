@@ -238,9 +238,11 @@ export class CollectorClient extends EventEmitter {
       this._lastError = errorMessage;
       this._lastErrorAt = _originalDateNow();
 
-      this.emit('error', new Error(
-        `[ERGENEKON] Collector flush failed (attempt ${this._consecutiveFailures}): ${errorMessage}`
-      ));
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', new Error(
+          `[ERGENEKON] Collector flush failed (attempt ${this._consecutiveFailures}): ${errorMessage}`
+        ));
+      }
 
       // Strict mode: throw immediately (for CI/test use)
       if (this.config.strict) {

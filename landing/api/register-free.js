@@ -298,6 +298,8 @@ export default async function handler(req, res) {
       licenseId: license.payload.licenseId,
       tier,
       expiresAt: license.payload.expiresAt,
+      signature: license.signature,
+      license,
     });
   } catch (err) {
     console.error('[REGISTER] Error:', err.message);

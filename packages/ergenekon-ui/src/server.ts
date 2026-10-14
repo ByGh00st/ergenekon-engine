@@ -11,7 +11,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { join, extname, dirname, resolve, normalize } from 'node:path';
+import { join, extname, dirname, resolve, normalize, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadLicense, getTierDisplay } from '@ergenekon/core';
 import { randomBytes } from 'node:crypto';
@@ -153,14 +153,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   filePath = normalize(filePath).replace(/\0/g, '');
   const publicDir = resolve(__dirname, 'public');
   const fullPath = resolve(publicDir, '.' + filePath);
+  const rel = relative(publicDir, fullPath);
   
-  // Path traversal check (M-07): must stay within public/ (requires trailing slash check)
-  if (!fullPath.startsWith(publicDir + '/')) {
-    if (fullPath !== publicDir) { // Allow serving publicDir itself as it might resolve to index.html logic
-      res.writeHead(403, { 'Content-Type': 'text/plain' });
-      res.end('Forbidden');
-      return;
-    }
+  // Path traversal check: must stay within public/ (works on Windows and POSIX)
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
   }
   
   // SPA fallback check (M-09): don't fallback dotfiles or certain paths

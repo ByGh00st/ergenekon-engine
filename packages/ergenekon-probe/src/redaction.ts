@@ -88,7 +88,7 @@ const TWILIO_TOKEN_RE = /SK[a-f0-9]{32}/i;
 const NOTION_TOKEN_RE = /secret_[a-zA-Z0-9]{43}/;
 const SUPABASE_TOKEN_RE = /sbp_[a-zA-Z0-9]{40}/;
 
-function looksLikeSecret(value: unknown): boolean {
+export function looksLikeSecret(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   if (value.length < 8) return false;
 

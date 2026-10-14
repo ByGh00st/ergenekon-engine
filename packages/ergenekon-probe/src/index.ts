@@ -62,6 +62,11 @@ export class ErgenekonProbe {
       flushIntervalMs: this.config.flushIntervalMs,
       maxBufferSize: this.config.bufferSize,
     });
+    this.collector.on('error', (err) => {
+      if (process.env.DEBUG || process.env.ERGENEKON_DEBUG) {
+        console.warn(`[ERGENEKON PROBE] Collector flush error: ${err.message}`);
+      }
+    });
     this.sampler = new SamplingEngine({
       baseRate: this.config.samplingRate,
       ...userConfig.sampling,

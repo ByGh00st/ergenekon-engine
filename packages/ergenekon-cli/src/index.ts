@@ -19,7 +19,7 @@
 //   npx ergenekon sessions  (after npm link)
 // ============================================================================
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import {
   exportSessionJSON,
   exportSessionBinary,
@@ -97,8 +97,19 @@ function sanitizePrint(str: string | undefined | null): string {
 
 // ── API helpers ───────────────────────────────────────────────────
 
-async function fetchAPI(path: string): Promise<unknown> {
+export function getCollectorHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const token = process.env['ERGENEKON_COLLECTOR_TOKEN'];
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+export async function fetchAPI(path: string): Promise<unknown> {
+  const headers = getCollectorHeaders();
   const resp = await fetch(`${COLLECTOR_URL}${path}`, {
+    headers,
     signal: AbortSignal.timeout(5000),
   });
   if (!resp.ok) {
@@ -107,10 +118,14 @@ async function fetchAPI(path: string): Promise<unknown> {
   return resp.json();
 }
 
-async function postAPI(path: string, body: unknown): Promise<unknown> {
+export async function postAPI(path: string, body: unknown): Promise<unknown> {
+  const headers = {
+    ...getCollectorHeaders(),
+    'Content-Type': 'application/json',
+  };
   const resp = await fetch(`${COLLECTOR_URL}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000),
   });
@@ -246,32 +261,42 @@ async function cmdExport(sessionId: string, outputFile?: string): Promise<void> 
   const isBinary = outputFile?.endsWith('.bin') || outputFile?.endsWith('.ergenekon.bin');
   const resolvedOutPath = require('node:path').resolve(outputFile || `${sessionId}.ergenekon.json`);
   
-  // SECURITY (H-28): Prevent overwriting sensitive files (Unix and Windows paths)
+  // SECURITY: Prevent overwriting sensitive files, source files, and project configs
   const normalizedPath = resolvedOutPath.toLowerCase().replace(/\\/g, '/');
-  const isDangerous = [
+  const isDangerousDir = [
     '/etc/', '/var/', '/usr/', '/bin/', '/sbin/', '/boot/', '/sys/', '/dev/',
     '/windows/', '/programdata/', '/program files/', '/appdata/',
     '/startup/', '/start menu/',
-    '/.ssh/', '/.aws/', '/.gnupg/', '/.npmrc/'
-  ].some(dir => normalizedPath.includes(dir)) || 
-  normalizedPath.match(/\.(bashrc|zshrc|profile|bat|cmd|exe|ps1|sh|vbs|dll|sys|ini)$/i) ||
-  normalizedPath.match(/\/\.[^\/]+$/);
+    '/.ssh/', '/.aws/', '/.gnupg/', '/.npmrc/', '/node_modules/', '/dist/', '/build/'
+  ].some(dir => normalizedPath.includes(dir));
 
-  if (isDangerous) {
-      console.error(`${c.red}SECURITY: Refusing to export to a sensitive, hidden, or executable path: ${resolvedOutPath}${c.reset}`);
+  const isScriptOrCode = normalizedPath.match(/\.(bashrc|zshrc|profile|bat|cmd|exe|ps1|sh|vbs|dll|sys|ini|js|ts|mjs|cjs|jsx|tsx|py|rb|php|java|c|cpp|h|rs|go|yaml|yml|toml)$/i);
+  const isSensitiveConfig = normalizedPath.endsWith('package.json') || normalizedPath.endsWith('tsconfig.json');
+  const isHiddenFile = normalizedPath.match(/(?:^|\/)\.[^\/]+$/);
+
+  // JSON files are allowed only if they are dedicated session exports (.ergenekon.json or matching target)
+  const isDisallowedJson = normalizedPath.endsWith('.json') && !normalizedPath.endsWith('.ergenekon.json') && isSensitiveConfig;
+
+  if (isDangerousDir || isScriptOrCode || isDisallowedJson || isHiddenFile) {
+      console.error(`${c.red}SECURITY: Refusing to export to a sensitive, source code, config, hidden, or executable path: ${resolvedOutPath}${c.reset}`);
+      process.exit(1);
+  }
+
+  // Refuse to clobber existing files unless explicitly specified
+  if (existsSync(resolvedOutPath)) {
+      console.error(`${c.red}SECURITY: Target export file already exists. Overwriting is blocked: ${resolvedOutPath}${c.reset}`);
       process.exit(1);
   }
 
   if (isBinary && outputFile) {
     const buf = exportSessionBinary(session);
-    // Write exclusively to prevent symlink overwrites, fail if exists
-    writeFileSync(resolvedOutPath, buf, { flag: 'w' });
+    writeFileSync(resolvedOutPath, buf, { flag: 'wx' });
     const jsonSize = JSON.stringify(session).length;
     const ratio = ((1 - buf.length / jsonSize) * 100).toFixed(0);
     console.log(`${c.green}✓${c.reset} Exported to ${c.bold}${resolvedOutPath}${c.reset} (${buf.length} bytes, ${ratio}% smaller than JSON)`);
   } else {
     const json = exportSessionJSON(session, { pretty: true });
-    writeFileSync(resolvedOutPath, json, { flag: 'w' });
+    writeFileSync(resolvedOutPath, json, { flag: 'wx' });
     console.log(`${c.green}✓${c.reset} Exported to ${c.bold}${resolvedOutPath}${c.reset} (${json.length} bytes)`);
   }
 }
@@ -604,4 +629,6 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+if (!process.env['VITEST']) {
+  main();
+}

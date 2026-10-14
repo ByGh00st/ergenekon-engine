@@ -80,23 +80,32 @@ async function processEvent(event: StripeEvent): Promise<WebhookResult> {
     console.log(`[WEBHOOK] Duplicate event ${event.id} — skipping`);
     return { received: true, action: 'duplicate_skipped' };
   }
-  // Prevent unbounded Set growth
-  if (processedEventIds.size >= MAX_IDEMPOTENCY_SET) {
-    const first = processedEventIds.values().next().value;
-    if (first) processedEventIds.delete(first);
-  }
-  processedEventIds.add(event.id);
-
+  let result: WebhookResult;
   switch (event.type) {
     case 'checkout.session.completed':
-      return handleCheckoutCompleted(event.data.object);
+      result = await handleCheckoutCompleted(event.data.object);
+      break;
 
     case 'customer.subscription.deleted':
-      return handleSubscriptionCancelled(event.data.object);
+      result = await handleSubscriptionCancelled(event.data.object);
+      break;
 
     default:
-      return { received: true, action: 'ignored' };
+      result = { received: true, action: 'ignored' };
+      break;
   }
+
+  // SECURITY: Only record idempotency if processing succeeded.
+  // Transient failures return received: false to allow Stripe webhook retries.
+  if (result.received) {
+    if (processedEventIds.size >= MAX_IDEMPOTENCY_SET) {
+      const first = processedEventIds.values().next().value;
+      if (first) processedEventIds.delete(first);
+    }
+    processedEventIds.add(event.id);
+  }
+
+  return result;
 }
 
 // ── Checkout Completed → Generate License ───────────────────────

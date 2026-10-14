@@ -287,15 +287,54 @@ export class ReplayEngine {
     const origMathRandom = Math.random;
     const origFetch = globalThis.fetch;
 
-    // SECURITY (H-30): Aggressive I/O sandboxing in replay mode.
-    // We must block modules that could leak secrets or execute arbitrary code
-    // if an attacker provides a malicious recording.
+    // SECURITY: Aggressive I/O sandboxing in replay mode.
     const Module = require('node:module');
     const originalRequire = Module.prototype.require;
     const originalMainModule = process.mainModule;
 
+    // Save and neuter dangerous builtin functions for both CommonJS and ESM imports
+    const cp = require('node:child_process');
+    const origCpMethods: Record<string, unknown> = {};
+    const cpMethodsToNeuter = ['exec', 'execSync', 'spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork'];
+    for (const m of cpMethodsToNeuter) {
+      if (typeof cp[m] === 'function') {
+        origCpMethods[m] = cp[m];
+        cp[m] = () => {
+          throw new Error(`[SECURITY] Replay Engine blocked access to sensitive module 'node:child_process.${m}' to prevent execution escape.`);
+        };
+      }
+    }
+
+    const fsMod = require('node:fs');
+    const origFsMethods: Record<string, unknown> = {};
+    const fsMethodsToNeuter = ['writeFile', 'writeFileSync', 'appendFile', 'appendFileSync', 'unlink', 'unlinkSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync'];
+    for (const m of fsMethodsToNeuter) {
+      if (typeof fsMod[m] === 'function') {
+        origFsMethods[m] = fsMod[m];
+        fsMod[m] = () => {
+          throw new Error(`[SECURITY] Replay Engine blocked access to sensitive function 'node:fs.${m}' to prevent write escape.`);
+        };
+      }
+    }
+    const origFsPromises: Record<string, unknown> = {};
+    const fsPromisesToNeuter = ['writeFile', 'appendFile', 'unlink', 'rm', 'rmdir'];
+    if (fsMod.promises) {
+      for (const m of fsPromisesToNeuter) {
+        if (typeof fsMod.promises[m] === 'function') {
+          origFsPromises[m] = fsMod.promises[m];
+          fsMod.promises[m] = async () => {
+            throw new Error(`[SECURITY] Replay Engine blocked access to sensitive function 'node:fs/promises.${m}' to prevent write escape.`);
+          };
+        }
+      }
+    }
+
     try {
-      // Sandbox requires
+      if (typeof Module.syncBuiltinESMExports === 'function') {
+        Module.syncBuiltinESMExports();
+      }
+
+      // Sandbox CommonJS requires
       Module.prototype.require = function(id: string) {
         if (id === 'fs' || id === 'node:fs' || id === 'fs/promises' || id === 'node:fs/promises' ||
             id === 'child_process' || id === 'node:child_process' ||
@@ -331,7 +370,13 @@ export class ReplayEngine {
             `Unexpected fetch call to ${url} — not in recording`);
         }
 
-        return new Response(JSON.stringify(mockResponse.body), {
+        const bodyPayload = mockResponse.body === undefined || mockResponse.body === null
+          ? ''
+          : typeof mockResponse.body === 'string'
+            ? mockResponse.body
+            : JSON.stringify(mockResponse.body);
+
+        return new Response(bodyPayload, {
           status: mockResponse.status,
           statusText: mockResponse.statusText,
           headers: mockResponse.headers,
@@ -340,6 +385,28 @@ export class ReplayEngine {
 
       return await fn();
     } finally {
+      // Restore neutered child_process methods and sync with ESM
+      for (const m of cpMethodsToNeuter) {
+        if (origCpMethods[m]) {
+          cp[m] = origCpMethods[m];
+        }
+      }
+      for (const m of fsMethodsToNeuter) {
+        if (origFsMethods[m]) {
+          fsMod[m] = origFsMethods[m];
+        }
+      }
+      if (fsMod.promises) {
+        for (const m of fsPromisesToNeuter) {
+          if (origFsPromises[m]) {
+            fsMod.promises[m] = origFsPromises[m];
+          }
+        }
+      }
+      if (typeof Module.syncBuiltinESMExports === 'function') {
+        Module.syncBuiltinESMExports();
+      }
+
       // Always restore originals
       Date.now = origDateNow;
       Math.random = origMathRandom;

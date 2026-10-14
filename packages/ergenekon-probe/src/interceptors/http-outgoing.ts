@@ -100,9 +100,19 @@ export function installFetchInterceptor(): void {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            if (value && totalSize < 65536) { // max 64kb
-              chunks.push(value);
-              totalSize += value.length;
+            if (value) {
+              if (totalSize < 65536) { // max 64kb
+                chunks.push(value);
+                totalSize += value.length;
+              }
+              if (totalSize >= 65536) {
+                try {
+                  await reader.cancel();
+                } catch (cancelErr: unknown) {
+                  if (process.env.DEBUG) console.warn('[PROBE] Stream cancel error:', cancelErr);
+                }
+                break;
+              }
             }
           }
           if (chunks.length > 0) {
@@ -117,8 +127,8 @@ export function installFetchInterceptor(): void {
               body: redactDeep(bodyData)
             });
           }
-        } catch {
-          // ignore stream read failures
+        } catch (streamErr: unknown) {
+          if (process.env.DEBUG) console.warn('[PROBE] Stream background consumption error:', streamErr);
         }
       })();
 

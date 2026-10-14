@@ -258,8 +258,8 @@ export class FileStorage {
       await fsRename(src, dst);
       this._corruptCount++;
       console.error(`[ERGENEKON STORAGE] Quarantined corrupt file: ${filename} — ${reason}`);
-    } catch {
-      // Best effort — if we can't move it, at least we didn't serve it
+    } catch (err: unknown) {
+      console.warn(`[ERGENEKON STORAGE] Failed to move corrupt file to quarantine: ${filename}`, err);
       this._corruptCount++;
     }
   }
@@ -274,38 +274,7 @@ export class FileStorage {
     this.sessionMetadata.clear();
     this._corruptCount = 0;
 
-    // Fast path: attempt to read the index.jsonl append-only log
-    try {
-      const indexData = await readFile(join(this.indexDir, 'index.jsonl'), 'utf-8');
-      const lines = indexData.split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const meta = JSON.parse(line);
-          this.sessionIndex.set(meta.id, `${meta.id}.json`);
-          this.sessionMetadata.set(meta.id, {
-            traceId: meta.traceId,
-            serviceName: meta.serviceName,
-            startedAt: meta.startedAt,
-            endedAt: meta.endedAt,
-            eventCount: meta.eventCount,
-            hasError: meta.hasError,
-          });
-          const traceIds = this.traceIndex.get(meta.traceId) ?? [];
-          if (!traceIds.includes(meta.id)) {
-            if (traceIds.length < MAX_SESSIONS_PER_TRACE) {
-              traceIds.push(meta.id);
-            }
-          }
-          this.traceIndex.set(meta.traceId, traceIds);
-        } catch (e) {
-          // ignore corrupted lines
-        }
-      }
-      return; // Fast path successful!
-    } catch (err) {
-      // Ignore if index.jsonl doesn't exist, fallback to full rebuild
-    }
+    // Read files and verify checksums (guarantees integrity and quarantine of corrupt files)
 
     try {
       const files = await readdir(this.sessionsDir);
@@ -349,7 +318,11 @@ export class FileStorage {
           this.traceIndex.set(session.traceId, traceIds);
         } catch (err: any) {
           if (fileHandle) {
-             try { await fileHandle.close(); } catch {}
+             try {
+               await fileHandle.close();
+             } catch (closeErr: unknown) {
+               console.warn(`[ERGENEKON STORAGE] Failed to close file handle for ${file}:`, closeErr);
+             }
           }
           if (err.code === 'ELOOP') {
             console.error(`[SECURITY] Symlink skipped during index rebuild: ${file}`);
